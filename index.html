@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Super JS Bros - Fixed Physics</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        canvas {
+            display: block;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+            background-color: #6B8CFF;
+        }
+    </style>
+</head>
+<body>
+
+<canvas id="gameCanvas"></canvas>
+
+<script>
+/** * KONFIGURACJA
+ */
+const SCREEN_WIDTH = 1280;
+const SCREEN_HEIGHT = 720;
+const TILE_SIZE = 48;
+
+// Fizyka (wartości bazowe dla 60 FPS)
+const GRAVITY = 0.8;
+const WALK_SPEED = 7;
+const SPRINT_SPEED = 12;
+const JUMP_POWER = -18;
+const TERMINAL_VELOCITY = 15;
+const ENEMY_SPEED = 3;
+
+// Typy kafelków
+const TYPE_GROUND = 0;
+const TYPE_BRICK = 1;
+const TYPE_HARD = 2;
+const TYPE_PIPE = 3;
+const TYPE_FLAG_POLE = 98;
+const TYPE_FLAG_TOP = 99;
+
+const THEME_DAY = { bg: "#6B8CFF", ground: "#C84C0C", brick: "#B43200", pipe: "#00B400", enemy: "#A52A2A" };
+const THEME_NIGHT = { bg: "#141428", ground: "#64646E", brick: "#505078", pipe: "#007800", enemy: "#781E1E" };
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+canvas.width = SCREEN_WIDTH;
+canvas.height = SCREEN_HEIGHT;
+
+const keys = {};
+window.addEventListener('keydown', e => keys[e.code] = true);
+window.addEventListener('keyup', e => keys[e.code] = false);
+
+/** * KLASY OBIEKTÓW
+ */
+
+class Player {
+    constructor(x, y) {
+        this.width = TILE_SIZE - 10;
+        this.height = TILE_SIZE - 4;
+        this.x = x;
+        this.y = y;
+        this.velX = 0;
+        this.velY = 0;
+        this.onGround = false;
+        this.alive = true;
+        this.finishedLevel = false;
+    }
+
+    update(dt, tiles, enemies, flags) {
+        if (!this.alive) return;
+
+        // Sterowanie z uwzględnieniem Delta Time
+        let speed = (keys['ShiftLeft'] || keys['ShiftRight']) ? SPRINT_SPEED : WALK_SPEED;
+        this.velX = 0;
+        if (keys['ArrowLeft'] || keys['KeyA']) this.velX = -speed;
+        if (keys['ArrowRight'] || keys['KeyD']) this.velX = speed;
+
+        if ((keys['Space'] || keys['ArrowUp'] || keys['KeyW']) && this.onGround) {
+            this.velY = JUMP_POWER;
+            this.onGround = false;
+        }
+
+        // Fizyka (dt skaluje przyspieszenie i ruch)
+        this.velY += GRAVITY * dt;
+        if (this.velY > TERMINAL_VELOCITY) this.velY = TERMINAL_VELOCITY;
+
+        // Ruch X
+        this.x += this.velX * dt;
+        this.collide(tiles, 'x');
+
+        // Ruch Y
+        this.y += this.velY * dt;
+        this.onGround = false;
+        this.collide(tiles, 'y');
+
+        this.checkEnemyCollisions(enemies, dt);
+        this.checkFlagCollisions(flags);
+
+        if (this.y > SCREEN_HEIGHT + TILE_SIZE) this.alive = false;
+    }
+
+    collide(tiles, dir) {
+        for (let t of tiles) {
+            if (t.type === TYPE_FLAG_POLE || t.type === TYPE_FLAG_TOP) continue;
+
+            if (this.x < t.x + TILE_SIZE && this.x + this.width > t.x &&
+                this.y < t.y + TILE_SIZE && this.y + this.height > t.y) {
+                if (dir === 'x') {
+                    if (this.velX > 0) this.x = t.x - this.width;
+                    if (this.velX < 0) this.x = t.x + TILE_SIZE;
+                } else {
+                    if (this.velY > 0) {
+                        this.y = t.y - this.height;
+                        this.velY = 0;
+                        this.onGround = true;
+                    } else if (this.velY < 0) {
+                        this.y = t.y + TILE_SIZE;
+                        this.velY = 0;
+                    }
+                }
+            }
+        }
+    }
+
+    checkEnemyCollisions(enemies, dt) {
+        for (let e of enemies) {
+            if (!e.alive) continue;
+            if (this.x < e.x + TILE_SIZE && this.x + this.width > e.x &&
+                this.y < e.y + TILE_SIZE && this.y + this.height > e.y) {
+                if (this.velY > 0 && this.y + this.height < e.y + 25) {
+                    e.alive = false;
+                    this.velY = JUMP_POWER * 0.7;
+                } else {
+                    this.alive = false;
+                }
+            }
+        }
+    }
+
+    checkFlagCollisions(flags) {
+        for (let f of flags) {
+            if (this.x < f.x + TILE_SIZE && this.x + this.width > f.x &&
+                this.y < f.y + TILE_SIZE && this.y + this.height > f.y) {
+                this.finishedLevel = true;
+            }
+        }
+    }
+
+    draw(ctx, cameraX) {
+        ctx.fillStyle = "red";
+        ctx.fillRect(this.x - cameraX, this.y, this.width, this.height);
+    }
+}
+
+class Enemy {
+    constructor(x, y, color) {
+        this.x = x;
+        this.y = y;
+        this.color = color;
+        this.velX = -ENEMY_SPEED;
+        this.velY = 0;
+        this.alive = true;
+    }
+
+    update(dt, tiles) {
+        if (!this.alive) return;
+
+        this.velY += GRAVITY * dt;
+        this.x += this.velX * dt;
+
+        for (let t of tiles) {
+            if (t.type === TYPE_FLAG_POLE || t.type === TYPE_FLAG_TOP) continue;
+            if (this.x < t.x + TILE_SIZE && this.x + TILE_SIZE > t.x &&
+                this.y < t.y + TILE_SIZE && this.y + TILE_SIZE > t.y) {
+                this.velX *= -1;
+                this.x += this.velX * dt;
+                break;
+            }
+        }
+
+        this.y += this.velY * dt;
+        for (let t of tiles) {
+            if (t.type === TYPE_FLAG_POLE || t.type === TYPE_FLAG_TOP) continue;
+            if (this.x < t.x + TILE_SIZE && this.x + TILE_SIZE > t.x &&
+                this.y < t.y + TILE_SIZE && this.y + TILE_SIZE > t.y) {
+                if (this.velY > 0) {
+                    this.y = t.y - TILE_SIZE;
+                    this.velY = 0;
+                }
+            }
+        }
+    }
+
+    draw(ctx, cameraX) {
+        if (!this.alive) return;
+        ctx.fillStyle = this.color;
+        ctx.fillRect(this.x - cameraX, this.y, TILE_SIZE, TILE_SIZE);
+        ctx.fillStyle = "black";
+        ctx.fillRect(this.x - cameraX + 5, this.y + 10, 10, 15);
+        ctx.fillRect(this.x - cameraX + TILE_SIZE - 15, this.y + 10, 10, 15);
+    }
+}
+
+class Tile {
+    constructor(x, y, type, theme) {
+        this.x = x; this.y = y; this.type = type; this.theme = theme;
+    }
+
+    draw(ctx, cameraX) {
+        const drawX = this.x - cameraX;
+        if (drawX < -TILE_SIZE || drawX > SCREEN_WIDTH) return;
+
+        switch (this.type) {
+            case TYPE_GROUND:
+                ctx.fillStyle = this.theme.ground;
+                ctx.fillRect(drawX, this.y, TILE_SIZE, TILE_SIZE);
+                ctx.strokeStyle = "rgba(0,0,0,0.2)";
+                ctx.strokeRect(drawX, this.y, TILE_SIZE, TILE_SIZE);
+                break;
+            case TYPE_BRICK:
+                ctx.fillStyle = this.theme.brick;
+                ctx.fillRect(drawX, this.y, TILE_SIZE, TILE_SIZE);
+                ctx.strokeRect(drawX, this.y, TILE_SIZE, TILE_SIZE);
+                break;
+            case TYPE_PIPE:
+                ctx.fillStyle = this.theme.pipe;
+                ctx.fillRect(drawX, this.y, TILE_SIZE, TILE_SIZE);
+                ctx.fillStyle = "rgba(255,255,255,0.2)";
+                ctx.fillRect(drawX + 5, this.y, 10, TILE_SIZE);
+                ctx.strokeRect(drawX, this.y, TILE_SIZE, TILE_SIZE);
+                break;
+            case TYPE_HARD:
+                ctx.fillStyle = "#505050";
+                ctx.fillRect(drawX, this.y, TILE_SIZE, TILE_SIZE);
+                ctx.strokeRect(drawX, this.y, TILE_SIZE, TILE_SIZE);
+                break;
+            case TYPE_FLAG_POLE:
+                ctx.fillStyle = "#DDD";
+                ctx.fillRect(drawX + TILE_SIZE / 2 - 2, this.y, 4, TILE_SIZE);
+                break;
+            case TYPE_FLAG_TOP:
+                ctx.fillStyle = "#DDD";
+                ctx.fillRect(drawX + TILE_SIZE / 2 - 2, this.y, 4, TILE_SIZE);
+                ctx.fillStyle = "yellow";
+                ctx.beginPath();
+                ctx.moveTo(drawX + TILE_SIZE / 2 + 2, this.y + 2);
+                ctx.lineTo(drawX + TILE_SIZE - 2, this.y + TILE_SIZE / 4);
+                ctx.lineTo(drawX + TILE_SIZE / 2 + 2, this.y + TILE_SIZE / 2);
+                ctx.fill();
+                break;
+        }
+    }
+}
+
+class LevelGenerator {
+    constructor() {
+        this.theme = THEME_DAY;
+        this.currentX = 0;
+        this.floorY = Math.floor(SCREEN_HEIGHT / TILE_SIZE) - 2;
+    }
+
+    generate(difficulty) {
+        let tiles = [], enemies = [], flags = [];
+        this.currentX = 0;
+
+        const createFlat = (w, eChance = 0) => {
+            for (let i = 0; i < w; i++) {
+                tiles.push(new Tile(this.currentX * TILE_SIZE, this.floorY * TILE_SIZE, TYPE_GROUND, this.theme));
+                tiles.push(new Tile(this.currentX * TILE_SIZE, (this.floorY + 1) * TILE_SIZE, TYPE_GROUND, this.theme));
+                if (Math.random() < eChance) enemies.push(new Enemy(this.currentX * TILE_SIZE, (this.floorY - 1) * TILE_SIZE, this.theme.enemy));
+                this.currentX++;
+            }
+        };
+
+        createFlat(10);
+        for(let i=0; i<15; i++) {
+            let r = Math.random();
+            if(r < 0.4) createFlat(5, 0.2 * difficulty);
+            else if(r < 0.6) this.currentX += 3; // Gap
+            else if(r < 0.8) { // Pipe
+                let h = 2;
+                for(let j=0; j<h; j++) tiles.push(new Tile(this.currentX * TILE_SIZE, (this.floorY-1-j)*TILE_SIZE, TYPE_PIPE, this.theme));
+                createFlat(2);
+            } else { // Bricks
+                let start = this.currentX;
+                createFlat(4);
+                for(let j=0; j<4; j++) tiles.push(new Tile((start+j)*TILE_SIZE, (this.floorY-4)*TILE_SIZE, TYPE_BRICK, this.theme));
+            }
+        }
+
+        // Meta
+        createFlat(3);
+        flags.push(new Tile(this.currentX * TILE_SIZE, (this.floorY - 1) * TILE_SIZE, TYPE_FLAG_POLE, this.theme));
+        flags.push(new Tile(this.currentX * TILE_SIZE, (this.floorY - 2) * TILE_SIZE, TYPE_FLAG_TOP, this.theme));
+        tiles.push(new Tile(this.currentX * TILE_SIZE, this.floorY * TILE_SIZE, TYPE_HARD, this.theme));
+        this.currentX += 6;
+
+        return { tiles, enemies, flags, spawn: [100, (this.floorY - 1) * TILE_SIZE] };
+    }
+}
+
+/** * GŁÓWNA LOGIKA GRY
+ */
+
+class Game {
+    constructor() {
+        this.levelGen = new LevelGenerator();
+        this.levelNum = 1;
+        this.lastTime = performance.now();
+        this.init();
+    }
+
+    init() {
+        this.levelGen.theme = this.levelNum % 2 === 1 ? THEME_DAY : THEME_NIGHT;
+        let data = this.levelGen.generate(this.levelNum);
+        this.tiles = data.tiles;
+        this.enemies = data.enemies;
+        this.flags = data.flags;
+        this.player = new Player(data.spawn[0], data.spawn[1]);
+        this.cameraX = 0;
+        this.gameOver = false;
+        this.win = false;
+    }
+
+    update(currentTime) {
+        // Obliczanie Delta Time (bazujemy na 60 FPS jako mnożniku 1.0)
+        let dt = (currentTime - this.lastTime) / (1000 / 60);
+        this.lastTime = currentTime;
+
+        // Zapobiega "przeskokom" przy lagach lub zmianie kart
+        if (dt > 2) dt = 2;
+
+        if (keys['KeyR']) { this.levelNum = 1; this.init(); return; }
+
+        if (this.gameOver) {
+            if (this.win && keys['Space']) { this.levelNum++; this.init(); }
+            return;
+        }
+
+        this.player.update(dt, this.tiles, this.enemies, this.flags);
+        for (let e of this.enemies) e.update(dt, this.tiles);
+
+        let targetX = this.player.x - SCREEN_WIDTH / 2;
+        if (targetX > this.cameraX) this.cameraX = targetX;
+
+        if (!this.player.alive) { this.gameOver = true; this.win = false; }
+        if (this.player.finishedLevel) { this.gameOver = true; this.win = true; }
+    }
+
+    draw() {
+        ctx.fillStyle = this.levelGen.theme.bg;
+        ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+
+        for (let t of this.tiles) t.draw(ctx, this.cameraX);
+        for (let f of this.flags) f.draw(ctx, this.cameraX);
+        for (let e of this.enemies) e.draw(ctx, this.cameraX);
+        this.player.draw(ctx, this.cameraX);
+
+        ctx.fillStyle = "white";
+        ctx.font = "20px Arial";
+        ctx.fillText(`Poziom: ${this.levelNum}`, 20, 35);
+
+        if (this.gameOver) {
+            ctx.fillStyle = "rgba(0,0,0,0.6)";
+            ctx.fillRect(0,0, SCREEN_WIDTH, SCREEN_HEIGHT);
+            ctx.textAlign = "center";
+            ctx.fillStyle = this.win ? "gold" : "red";
+            ctx.font = "48px Arial";
+            ctx.fillText(this.win ? "POZIOM UKOŃCZONY!" : "GAME OVER", SCREEN_WIDTH/2, SCREEN_HEIGHT/2);
+            ctx.fillStyle = "white";
+            ctx.font = "20px Arial";
+            ctx.fillText(this.win ? "Naciśnij SPACJĘ, aby iść dalej" : "Naciśnij R, aby zrestartować", SCREEN_WIDTH/2, SCREEN_HEIGHT/2 + 50);
+            ctx.textAlign = "left";
+        }
+    }
+
+    loop(currentTime) {
+        this.update(currentTime);
+        this.draw();
+        requestAnimationFrame((time) => this.loop(time));
+    }
+}
+
+const game = new Game();
+requestAnimationFrame((time) => game.loop(time));
+
+</script>
+</body>
+</html>
